@@ -1,0 +1,339 @@
+#cloud-config
+autoinstall:
+  version: 1
+
+  # Interactive sections to show minimal progress
+  interactive-sections:
+    - network
+
+  # Identity configuration
+  # CUSTOMIZE: Update username, hostname, and password before creating USB
+  identity:
+    hostname: ubuntu-secure
+    username: admin
+    # Generate with: mkpasswd -m sha-512
+    password: "$6$rounds=4096$saltsaltsal$3.rBJQlAQEt4I9mXCE85x3qYaXLGKC5KQn3qQn3qQn3qQn3qQn3qQn3qQn3qQn3qQn3qQn3qQn3qQ"
+
+  # SSH configuration - key-only authentication for security
+  # CUSTOMIZE: Add your SSH public key before creating USB
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC... your-public-key-here"
+
+  # Network configuration - DHCP by default
+  network:
+    version: 2
+    ethernets:
+      all:
+        match:
+          name: "e*"
+        dhcp4: true
+
+  # Required packages for TPM2 enrollment
+  packages:
+    - tpm2-tools
+    - cryptsetup-bin
+    - openssl
+
+  # Storage configuration - LVM on LUKS
+  storage:
+    layout:
+      name: custom
+    config:
+      # Disk configuration
+      - type: disk
+        id: disk0
+        path: /dev/sda
+        ptable: gpt
+        wipe: superblock
+        preserve: false
+        grub_device: true
+
+      # EFI System Partition (512MB)
+      - type: partition
+        id: partition-efi
+        device: disk0
+        size: 512M
+        flag: boot
+        number: 1
+        preserve: false
+
+      # Boot partition (1GB, unencrypted for emergency access)
+      - type: partition
+        id: partition-boot
+        device: disk0
+        size: 1G
+        number: 2
+        preserve: false
+
+      # Main encrypted partition (remaining space)
+      - type: partition
+        id: partition-luks
+        device: disk0
+        size: -1
+        number: 3
+        preserve: false
+
+      # LUKS encryption layer
+      # IMPORTANT: This password will be replaced by the create-usb.sh script
+      # with a randomly generated temporary password
+      - type: dm_crypt
+        id: dmcrypt0
+        volume: partition-luks
+        key: "TEMP_PASSWORD_REPLACE_ME"
+        dm_name: cryptroot
+        preserve: false
+
+      # LVM Volume Group on encrypted partition
+      - type: lvm_volgroup
+        id: vg0
+        name: vg0
+        devices:
+          - dmcrypt0
+        preserve: false
+
+      # Swap logical volume (8GB - adjust based on RAM)
+      - type: lvm_partition
+        id: lv-swap
+        name: swap
+        volgroup: vg0
+        size: 8G
+        preserve: false
+
+      # Root logical volume (remaining space)
+      - type: lvm_partition
+        id: lv-root
+        name: root
+        volgroup: vg0
+        size: -1
+        preserve: false
+
+      # Format EFI partition
+      - type: format
+        id: format-efi
+        volume: partition-efi
+        fstype: fat32
+        label: EFI
+        preserve: false
+
+      # Format boot partition
+      - type: format
+        id: format-boot
+        volume: partition-boot
+        fstype: ext4
+        label: BOOT
+        preserve: false
+
+      # Format root partition
+      - type: format
+        id: format-root
+        volume: lv-root
+        fstype: ext4
+        label: ROOT
+        preserve: false
+
+      # Format swap
+      - type: format
+        id: format-swap
+        volume: lv-swap
+        fstype: swap
+        label: SWAP
+        preserve: false
+
+      # Mount EFI
+      - type: mount
+        id: mount-efi
+        device: format-efi
+        path: /boot/efi
+
+      # Mount boot
+      - type: mount
+        id: mount-boot
+        device: format-boot
+        path: /boot
+
+      # Mount root
+      - type: mount
+        id: mount-root
+        device: format-root
+        path: /
+
+      # Mount swap
+      - type: mount
+        id: mount-swap
+        device: format-swap
+        path: none
+
+  # Late commands - TPM2 enrollment
+  # These run after installation, before reboot
+  late-commands:
+    # Ensure TPM2 tools are installed
+    - curtin in-target -- apt-get update
+    - curtin in-target -- apt-get install -y tpm2-tools cryptsetup-bin openssl
+
+    # Create TPM2 enrollment script
+    - |
+      cat > /target/tmp/setup-tpm2.sh << 'EOFSCRIPT'
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+      echo "Starting TPM2 enrollment process" | tee -a /var/log/tpm2-setup.log
+      echo "Time: $(date)" | tee -a /var/log/tpm2-setup.log
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+
+      # Find LUKS device
+      echo "Finding LUKS device..." | tee -a /var/log/tpm2-setup.log
+      LUKS_DEVICE=$(blkid -t TYPE="crypto_LUKS" -o device | head -n1)
+
+      if [ -z "$LUKS_DEVICE" ]; then
+        echo "ERROR: No LUKS device found!" | tee -a /var/log/tpm2-setup.log
+        exit 1
+      fi
+
+      echo "Found LUKS device: $LUKS_DEVICE" | tee -a /var/log/tpm2-setup.log
+
+      # Get LUKS UUID
+      LUKS_UUID=$(cryptsetup luksDump "$LUKS_DEVICE" | grep "UUID:" | awk '{print $2}')
+      echo "LUKS UUID: $LUKS_UUID" | tee -a /var/log/tpm2-setup.log
+
+      # Check if TPM is available
+      if [ ! -e /dev/tpm0 ] && [ ! -e /dev/tpmrm0 ]; then
+        echo "WARNING: No TPM device found. Skipping TPM enrollment." | tee -a /var/log/tpm2-setup.log
+        echo "System will require password on every boot." | tee -a /var/log/tpm2-setup.log
+        exit 0
+      fi
+
+      echo "TPM device found, proceeding with enrollment..." | tee -a /var/log/tpm2-setup.log
+
+      # Enroll TPM2 with PCR banks 0,2,7,9
+      # PCR 0,2: Firmware and driver measurements
+      # PCR 7: Secure Boot policy
+      # PCR 9: Kernel and initramfs (when using shim)
+      echo "Enrolling TPM2..." | tee -a /var/log/tpm2-setup.log
+      systemd-cryptenroll \
+        --tpm2-device=auto \
+        --tpm2-pcrs=0+2+7+9 \
+        "$LUKS_DEVICE" 2>&1 | tee -a /var/log/tpm2-setup.log
+
+      if [ $? -ne 0 ]; then
+        echo "ERROR: TPM2 enrollment failed!" | tee -a /var/log/tpm2-setup.log
+        exit 1
+      fi
+
+      echo "TPM2 enrollment successful" | tee -a /var/log/tpm2-setup.log
+
+      # Update crypttab to use TPM2 unlock with PCR 15 measurements
+      # tpm2-measure-pcr=yes enables PCR 15 measurement of volume keys
+      # This protects against partition replacement attacks
+      echo "Updating crypttab..." | tee -a /var/log/tpm2-setup.log
+      CRYPT_NAME=$(grep "$LUKS_UUID" /etc/crypttab | awk '{print $1}')
+
+      if [ -z "$CRYPT_NAME" ]; then
+        echo "ERROR: Could not find crypt device in crypttab!" | tee -a /var/log/tpm2-setup.log
+        exit 1
+      fi
+
+      echo "Crypt name: $CRYPT_NAME" | tee -a /var/log/tpm2-setup.log
+
+      # Backup original crypttab
+      cp /etc/crypttab /etc/crypttab.backup
+
+      # Update crypttab with TPM2 options
+      sed -i "s|^$CRYPT_NAME.*|$CRYPT_NAME UUID=$LUKS_UUID none luks,discard,tpm2-device=auto,tpm2-measure-pcr=yes|" /etc/crypttab
+
+      echo "Updated crypttab:" | tee -a /var/log/tpm2-setup.log
+      cat /etc/crypttab | tee -a /var/log/tpm2-setup.log
+
+      # Generate and add backup recovery password
+      # CRITICAL: This is the only way to recover if TPM fails
+      echo "Generating recovery password..." | tee -a /var/log/tpm2-setup.log
+      RECOVERY_PASS=$(openssl rand -base64 32)
+
+      echo "$RECOVERY_PASS" | cryptsetup luksAddKey "$LUKS_DEVICE" 2>&1 | tee -a /var/log/tpm2-setup.log
+
+      if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to add recovery password!" | tee -a /var/log/tpm2-setup.log
+        exit 1
+      fi
+
+      # Save recovery password to root's home (will be shown to user)
+      mkdir -p /root
+      cat > /root/recovery-password.txt << EOFPASS
+      ========================================
+      LUKS RECOVERY PASSWORD
+      ========================================
+
+      Device: $LUKS_DEVICE
+      UUID: $LUKS_UUID
+
+      Recovery Password:
+      $RECOVERY_PASS
+
+      ========================================
+      IMPORTANT: Back this up to secure external storage!
+      ========================================
+
+      This password is required if:
+      - TPM fails or is unavailable
+      - Hardware changes (motherboard/TPM replacement)
+      - Secure Boot configuration changes
+      - PCR values change unexpectedly
+
+      Without this password, data cannot be recovered if TPM unlock fails.
+      EOFPASS
+
+      chmod 600 /root/recovery-password.txt
+      chown root:root /root/recovery-password.txt
+
+      echo "Recovery password saved to /root/recovery-password.txt" | tee -a /var/log/tpm2-setup.log
+
+      # Also display to console so user can copy it during installation
+      echo "" | tee -a /var/log/tpm2-setup.log
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+      echo "RECOVERY PASSWORD (SAVE THIS NOW!):" | tee -a /var/log/tpm2-setup.log
+      echo "$RECOVERY_PASS" | tee -a /var/log/tpm2-setup.log
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+      echo "" | tee -a /var/log/tpm2-setup.log
+
+      # Remove temporary password keyslot
+      # The temporary password is in keyslot 0
+      echo "Removing temporary password..." | tee -a /var/log/tpm2-setup.log
+      echo -n "TEMP_PASSWORD_REPLACE_ME" | cryptsetup luksRemoveKey "$LUKS_DEVICE" - 2>&1 | tee -a /var/log/tpm2-setup.log
+
+      if [ $? -ne 0 ]; then
+        echo "WARNING: Failed to remove temporary password. You should remove it manually after boot." | tee -a /var/log/tpm2-setup.log
+      else
+        echo "Temporary password removed successfully" | tee -a /var/log/tpm2-setup.log
+      fi
+
+      # Update initramfs to include TPM2 support
+      echo "Updating initramfs..." | tee -a /var/log/tpm2-setup.log
+      update-initramfs -u -k all 2>&1 | tee -a /var/log/tpm2-setup.log
+
+      if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to update initramfs!" | tee -a /var/log/tpm2-setup.log
+        exit 1
+      fi
+
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+      echo "TPM2 setup completed successfully!" | tee -a /var/log/tpm2-setup.log
+      echo "System will auto-unlock on next boot using TPM2" | tee -a /var/log/tpm2-setup.log
+      echo "========================================" | tee -a /var/log/tpm2-setup.log
+
+      EOFSCRIPT
+
+    # Make script executable
+    - curtin in-target -- chmod +x /tmp/setup-tpm2.sh
+
+    # Run TPM2 enrollment script
+    - curtin in-target -- /tmp/setup-tpm2.sh
+
+    # Clean up
+    - curtin in-target -- rm /tmp/setup-tpm2.sh
+
+    # Set up passwordless sudo for admin user (optional, comment out if not desired)
+    # - curtin in-target -- sh -c 'echo "admin ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/admin'
+    # - curtin in-target -- chmod 440 /etc/sudoers.d/admin
