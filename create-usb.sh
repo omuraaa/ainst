@@ -17,8 +17,8 @@ set -e
 
 # Configuration defaults
 UBUNTU_VERSION="24.04"
-UBUNTU_ISO_URL="https://releases.ubuntu.com/${UBUNTU_VERSION}/ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
-ISO_NAME="ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
+UBUNTU_ISO_URL="https://releases.ubuntu.com/${UBUNTU_VERSION}.1/ubuntu-${UBUNTU_VERSION}.1-live-server-amd64.iso"
+ISO_NAME="ubuntu-${UBUNTU_VERSION}.1-live-server-amd64.iso"
 OUTPUT_ISO="ubuntu-${UBUNTU_VERSION}-autoinstall-tpm2.iso"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -205,8 +205,8 @@ parse_arguments() {
                     exit 1
                 fi
                 UBUNTU_VERSION="$2"
-                UBUNTU_ISO_URL="https://releases.ubuntu.com/${UBUNTU_VERSION}/ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
-                ISO_NAME="ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
+                UBUNTU_ISO_URL="https://releases.ubuntu.com/${UBUNTU_VERSION}.1/ubuntu-${UBUNTU_VERSION}.1-live-server-amd64.iso"
+                ISO_NAME="ubuntu-${UBUNTU_VERSION}.1-live-server-amd64.iso"
                 OUTPUT_ISO="ubuntu-${UBUNTU_VERSION}-autoinstall-tpm2.iso"
                 shift 2
                 ;;
