@@ -375,7 +375,7 @@ mkdir -p "$ISO_EXTRACT_DIR/nocloud"
 
 # Copy and modify user-data with temporary password
 cp "$USER_DATA_FILE" "$ISO_EXTRACT_DIR/nocloud/user-data"
-sed -i "s/TEMP_PASSWORD_REPLACE_ME/$TEMP_PASSWORD/g" "$ISO_EXTRACT_DIR/nocloud/user-data"
+sed -i "s|TEMP_PASSWORD_REPLACE_ME|$TEMP_PASSWORD|g" "$ISO_EXTRACT_DIR/nocloud/user-data"
 
 # Copy meta-data
 cp "$META_DATA_FILE" "$ISO_EXTRACT_DIR/nocloud/meta-data"
@@ -435,7 +435,7 @@ if [ "$QUIET" = true ]; then
         -e boot/grub/efi.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -isohybrid-apm-hfsplus \
+        # -isohybrid-apm-hfsplus \
         "$ISO_EXTRACT_DIR" > /dev/null 2>&1
 else
     xorriso -as mkisofs \
@@ -451,7 +451,7 @@ else
         -e boot/grub/efi.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -isohybrid-apm-hfsplus \
+        # -isohybrid-apm-hfsplus \
         "$ISO_EXTRACT_DIR" 2>&1 | grep -v "^xorriso" | grep -v "^libisofs" || true
 fi
 
