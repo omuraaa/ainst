@@ -421,6 +421,14 @@ else
 fi
 
 # Build the ISO with xorriso
+# Ubuntu 24.04 uses EFI boot - create an EFI boot image first
+print_info "Creating EFI boot image..."
+dd if=/dev/zero of="$WORK_DIR/efiboot.img" bs=1M count=10 2>/dev/null
+mkfs.vfat "$WORK_DIR/efiboot.img" >/dev/null 2>&1
+mmd -i "$WORK_DIR/efiboot.img" ::/EFI
+mmd -i "$WORK_DIR/efiboot.img" ::/EFI/boot
+mcopy -i "$WORK_DIR/efiboot.img" "$ISO_EXTRACT_DIR/EFI/boot/"*.efi ::/EFI/boot/
+
 if [ "$QUIET" = true ]; then
     xorriso -as mkisofs \
         -r -V "Ubuntu Autoinstall TPM2" \
@@ -432,11 +440,13 @@ if [ "$QUIET" = true ]; then
         -boot-load-size 4 \
         -boot-info-table \
         -eltorito-alt-boot \
-        -e boot/grub/efi.img \
+        -e efiboot.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        # -isohybrid-apm-hfsplus \
-        "$ISO_EXTRACT_DIR" > /dev/null 2>&1
+        -eltorito-catalog boot.catalog \
+        "$ISO_EXTRACT_DIR" \
+        -graft-points \
+        efiboot.img="$WORK_DIR/efiboot.img" > /dev/null 2>&1
 else
     xorriso -as mkisofs \
         -r -V "Ubuntu Autoinstall TPM2" \
@@ -448,11 +458,13 @@ else
         -boot-load-size 4 \
         -boot-info-table \
         -eltorito-alt-boot \
-        -e boot/grub/efi.img \
+        -e efiboot.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        # -isohybrid-apm-hfsplus \
-        "$ISO_EXTRACT_DIR" 2>&1 | grep -v "^xorriso" | grep -v "^libisofs" || true
+        -eltorito-catalog boot.catalog \
+        "$ISO_EXTRACT_DIR" \
+        -graft-points \
+        efiboot.img="$WORK_DIR/efiboot.img" 2>&1 | grep -v "^xorriso" | grep -v "^libisofs" || true
 fi
 
 if [ $? -eq 0 ] && [ -f "$OUTPUT_PATH" ]; then
